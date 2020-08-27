@@ -1,0 +1,699 @@
+---
+title: "Mkt MDS"
+author: "Team Hive"
+date: "2/9/2020"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = T, warning = F, message = F, fig.width = 9, fig.height = 6)
+
+```
+
+
+```{r environment setup}
+# set the working directory
+setwd("C:/WFU/Courses/Spring/Marketing_Analytics/Assignments/A3")
+
+# load in necessary packages
+library(tidyverse)
+library(jsonlite)
+library(lubridate)
+library(tidytext)
+library(textdata)
+
+
+```
+
+
+```{r import data}
+## import the data from local json file
+# "Appliances.json" is the review data under products
+appliance <- stream_in(file("Appliances.json"))
+
+# "meta_Appliances.json" is the data about the product 
+meta <- stream_in(file("meta_Appliances.json"))
+```
+
+
+
+```{r app tidying}
+## tidying the review dataset
+app_tidy <- appliance %>%
+  # convert unix timestamp to POSIXct datetime format
+  mutate(datetime = as.POSIXct(unixReviewTime, origin="1970-01-01")) %>%
+  # remove unnecessary columns to relieve the computing resource
+  select(-starts_with('style'), -verified, -reviewTime, -reviewerName, -image, -vote, -overall)
+
+# unique(meta$category)
+
+## tidying the meta data
+
+# select only necessary columns to relieve the computing resource
+meta_tidy <- meta %>% 
+  select(category, brand, price, rank, asin)
+
+### tidying price
+# take the price column out, it is all strings
+price <- meta_tidy$price
+# remove dollar sign
+price <- str_remove_all(price,"\\$")
+# remove thousands separator, which is comma, like in "1,234.00"
+price <- str_remove(price,"\\,")
+
+# some"price" is a price range like "$17.19 - $260.00", we will adopt the mean of the bounds as the value
+# Creating "price_range" table, only 3 obs.
+price[which(is.na(price))] <- "9999"
+row_index_coercion <- which(is.na(as.numeric(gsub("\\$","", price))))
+price_range <- tibble(asin = meta_tidy$asin, price = price) %>%
+  slice(row_index_coercion)
+
+# separate price range
+price_range <- price_range %>%
+  separate(price, into = c("low", "high"), sep = " - ")
+price_range$low <- as.numeric(price_range$low)
+price_range$high <- as.numeric(price_range$high)
+
+# obtain the numeric of price that is not a price range
+meta_tidy$price <- as.numeric(price)
+
+# acquire the average of the lower and upper bound of the price range
+temp_avg <- price_range %>%
+  group_by(asin) %>%
+  dplyr::summarize(avg = mean(low, high))
+
+# input the avg to where the price ranges are located
+meta_tidy$price[row_index_coercion] <- temp_avg$avg
+
+# category tidying
+meta_tidy <- meta_tidy %>%
+  unnest_wider(category) 
+
+# rename the output from unnest_wider manually
+meta_tidy <- meta_tidy %>%
+  rename(cat_1 = ...1,
+         cat_2 = ...2,
+         cat_3 = ...3,
+         cat_4 = ...4,
+         cat_5 = ...5,
+         cat_6 = ...6,
+         cat_7 = ...7,
+         cat_8 = ...8)
+
+# rank tidying in the same way of tidying category
+meta_tidy <- meta_tidy %>% 
+  unnest_wider(rank) %>%
+  rename(rank = ...1)
+
+```
+
+
+```{r top brands}
+# check duplicates from meta_tidy
+sum(duplicated(meta_tidy$asin))
+
+# remove duplicated rows, if any
+meta_tidy <- meta_tidy[!duplicated(meta_tidy$asin), ]
+
+# join the review data and metadata using field "asin"
+appliances_tidy <- app_tidy %>%
+  left_join(meta_tidy, by = "asin")
+
+# clean top brands
+appliances_tidy$brand<-str_replace(appliances_tidy$brand, "4YourHome","4 Your Home")%>%
+  # remove messy stings found in the text
+  str_remove("amp;")%>%
+  # Unite Cosmo's synonym
+  str_replace("Cosmo Appliances","Cosmo") %>%
+  # Unite GE's synonym in column `brand`
+  str_replace("[Gg]eneral [Ee]lectric", "GE") %>%
+  str_replace("GE Lighting|GE APPLIANCE PARTS|Replacement for GE
+              |Aftmk Rplcm for # GE
+              |Aftmk Rplm for GE|	GE Profile
+              |GE - GE|GE Replacement|Replacement for GE GE HotPoint", "GE")%>%
+  # Unite ICEPURE's synonym
+  str_replace("Icepure|IcePure|GOLDEN ICEPURE", "ICEPURE")%>%
+  # Unite Deflect-O
+  str_replace("Deflect-O","Deflecto")%>%
+  # Unite RPS 
+  str_replace("RPS PRODUCTS","RPS")%>%
+  # Unite Air king
+  str_replace("Air King America","Air King")%>%
+  # Unite PlumbCraft
+  str_replace("PlumbCraft","Plumb Craft")%>%
+  # Unite NORCOLD INC
+  str_replace("NORCOLD INC|Norcold Inc. Refrigerators","Norcold")%>%
+  # Clean Napco Made in America 279838 AND 279816
+  str_replace("Napco Made in America 279838 AND 279816|Napco Made In USA","Napco")%>%
+  # Clean Water Filter Tree Filter Better Drink Better
+  str_replace("Water Filter Tree Filter Better Drink Better","Water Filter Tree Filter")%>%
+  #Unite Whirlpool
+  str_replace("WHIRLPOOL|EveryDrop by Whirlpool|OEM FACTORY ORIGINAL WHIRLPOOL
+               |Aftmk Rplcm for # Whirlpool|Aftmk Rplm for Whirlpool","Whirlpool")%>%
+  #Unite Frigidaire 
+  str_replace("Aftmk Rplcm for Frigidaire|Replaces Frigidaire","Frigidaire")%>%
+  #Unite	LG
+  str_replace("LG APPLIANCE \\{PARTS\\}|LG Electronics Incorporated","LG")%>%
+  #Unite	Samsung
+  str_replace("Aftmk Rplcm for # Samsung|SamSung","Samsung")%>%
+  #Unite	BROAN
+  str_replace("BROAN|Broan-NuTone|Broan-Nutone Group|Broan Manufacturing
+  |BROAN NUTONE|Broan Nutone Llc","Broan")%>%
+  #Unite ERP
+  str_replace("ERP product|BYP-ERP","ERP")%>%
+  #Unite	Range Kleen
+  str_replace("RANGE KLEEN MFG INC","Range Kleen")%>%
+  #Unite	Holmes
+  str_replace("HOLMES AIR PURIFIERS/HUMIDIF","Holmes")%>%
+  #Unite	Kenmore
+  str_replace("Aftermarket Replm for Kenmore|Aftmk Replm for Kenmore
+              |Aftmk Rplcm for # Kenmore|	Aftmk Rplm for Kenmore|
+              Kenmore Elite|Replacement for Kenmore|
+              Replacement for Kenmore Sears|
+              Sears Kenmore","Kenmore")%>%
+  #Unite Maytag
+  str_replace("Aftmk Replm for Maytag|Aftmk Rplcm for # Maytag|
+              Aftmk Rplm for Maytag|Maytag Neptune|
+              	Replacement for Maytag","Maytag")%>%
+  #Unite	Danby
+  str_replace("Danby Silhouette|Danby Designer","Danby")%>%
+  #Unite	Aprilaire
+  str_replace("Space-Gard and Aprilaire","Aprilaire") %>%
+  #Unite		Edgewater Parts
+  str_replace("EDGEWATER PARTYS","Edgewater Parts")%>%
+  #Unite		Certified Appliance Accessories
+  str_replace("Certified Appliance Accessories","Certified Appliance")%>%
+  #Unite		Certified Appliance Accessories
+  str_replace("Lambro Industries, Inc.","Lambro")%>%
+  #Unite		HEARTLAND
+  str_replace("HEARTLAND","Heartland Products Inc.")%>%
+  #Unite		BUILDER'S BEST,
+  str_replace("BUILDER'S BEST,","Builder's Best")
+
+
+appliances_tidy$reviewText <- str_replace(appliances_tidy$reviewText, "4YourHome","4 Your Home")%>%
+  # remove messy stings found in the text
+  str_remove("amp;") %>%
+  # Unite GE's synonym in column `reviewText`
+  str_replace("[Gg]eneral [Ee]lectric", "GE") %>%
+  # Unite ICEPURE's synonym
+  str_replace("Icepure|IcePure|GOLDEN ICEPURE", "ICEPURE")
+
+# Unite GE's synonym in column `summary`
+appliances_tidy$summary<-str_replace(appliances_tidy$summary, "[Gg]eneral [Ee]lectric", "GE") 
+
+# exclude observations that have NA in all three relevant columns: brand, summary, and reviewText
+appliances_tidy <- appliances_tidy %>%
+  filter(!(is.na(`summary`)&is.na(brand)&is.na(reviewText))) 
+
+### find Top 30 brands by ranking them by pseudo sales volume - count of rview * price ###
+brands <- appliances_tidy %>%
+  select(brand, price) %>%
+  group_by(brand) %>%
+  count()%>%
+  arrange(desc(n)) %>%
+  na.omit() %>%
+  ungroup() %>%
+  top_n(30, wt = n)
+
+# obtain the array of top 30 brands
+top_30_brands <- brands$brand
+```
+
+
+```{r calculate lift}
+computeLift <- function(data, brands){
+  
+  ### calculate occurrences and co-occurrences
+  
+  # Initialize a matrix to store the lift results.
+  lift <- data.frame(matrix(NA, nrow=length(brands), ncol=length(brands)))
+  rownames(lift) <- brands
+  colnames(lift) <- brands
+  # Initialize an array to store the occurrences, with the i th element being the occurrences of brand i
+  arr_occ <- c()
+  # Initialize an array to store the co-occurrences, with the i*j th element being the co-occurrences of brand i and brand j
+  arr_coocc <- c()
+  
+  for (i in seq_along(brands)) {
+    
+    # In the outer loop, get the occurrences of brand i, and append it to the end of arr_occ
+    b1 <- brands[i]
+    # detect the occurrences of b1 in review text
+    flag_1_rev <- str_detect(data$reviewText, b1)
+    # detect whether the review is under the product of b1
+    flag_1_brand <- str_detect(data$brand, b1)
+    # detect the occurrences of b1 in summary
+    flag_1_summary <- str_detect(data$summary, b1)
+    
+    # However, the str_detect function will return NA if the string is empty
+    # set NAs in the `flag`, a boolean array, to False
+    flag_1_rev[is.na(flag_1_rev)] <- F
+    flag_1_brand[is.na(flag_1_brand)] <- F
+    flag_1_summary[is.na(flag_1_summary)] <- F
+    
+    # combine the flags with 'OR' condition
+    flag_1 <- flag_1_rev | flag_1_brand | flag_1_summary
+      
+    arr_occ <- c(arr_occ, sum(flag_1))
+    
+    for (j in seq_along(brands)){
+      # In the inner loop, get the co-occurrences of brand i and brand j, and append it to the end of arr_coocc
+      b2 <- brands[j]
+      # detect the occurrences of b2 in review text
+      flag_2_rev <- str_detect(data$reviewText, b2)
+      # detect whether the review is under the product of b2
+      flag_2_brand <- str_detect(data$brand, b2)
+      # detect the occurrences of b2 in summary
+      flag_2_summary <- str_detect(data$summary, b2)
+      
+      # However, the str_detect function will return NA if the string is empty
+      # replace NA with FALSE
+      flag_2_rev[is.na(flag_2_rev)] <- F
+      flag_2_brand[is.na(flag_2_brand)] <- F
+      flag_2_summary[is.na(flag_2_summary)] <- F
+      
+      # combine the flags of b2 with 'OR' condition
+      flag_2 <- flag_2_rev | flag_2_brand | flag_2_summary
+      
+      # get the index of co-occurrences of with "AND" condition
+      arr_coocc <- c(arr_coocc, sum(flag_2 & flag_1))
+      
+    }
+  }
+  
+  # print(arr_coocc)
+  ### calculate lift
+  
+  # loop over each cell of `lift` table by rows and columns 
+  # iterate over rows, indexed by i
+  for (i in 1:nrow(lift)){
+    # loop over columns, indexed by j
+    for (j in 1:ncol(lift)) {
+      # IF:
+      #  (1) the cell indexed is on the diagonal line, OR
+      #  (2) P(A) is zero, OR
+      #  (3) P(B) is zero
+      # THEN skip the loop because the denominator will be zero
+      if (i == j | arr_occ[i] == 0 | arr_occ[j] == 0) {
+        next
+      # Calculate lift with P(A, B)/(P(A)*P(B))
+      } else {
+        lift[i, j] = arr_coocc[i*j]/arr_occ[i]/arr_occ[j]*nrow(data)
+      }
+      
+    }
+  }
+  return(lift)
+}
+lift <- computeLift(appliances_tidy, top_30_brands)
+# save the lift
+write_csv(lift, "lift.csv")
+```
+
+```{r sentiment analysis}
+
+# filter out reviews under only the top 30 brands
+filter_appliances <- inner_join(brands, appliances_tidy, by = "brand" )
+
+# tokenize the reviews into review_words
+review_words <- filter_appliances %>%
+  select(brand,summary,reviewText) %>%
+  unnest_tokens(word, reviewText) %>%
+  filter(!word %in% stop_words$word,
+         str_detect(word, "^[a-z']+$"))%>%
+  inner_join(get_sentiments("afinn"))
+
+# get the avg sentiment rating for each brand
+reviews_sentiment <- review_words %>%
+  group_by(brand) %>%
+  na.omit()%>%
+  summarize(sentiment = mean(value))
+
+# get the count of words under each brand
+review_words_counted <- review_words %>%
+  count(brand, value, word) %>%
+  filter(n>20)%>%
+  ungroup()
+
+# aggregate the above into one table - summary
+word_summaries <- review_words_counted %>%
+  group_by(brand) %>%
+  summarize(reviews = n(),
+            uses = sum(n)) %>%
+  ungroup()%>%
+  na.omit()%>%
+  left_join(reviews_sentiment, by = "brand") %>%
+  arrange(desc(sentiment)) 
+
+```
+
+
+
+
+```{r MDS}
+######## MDS ##########
+mds_plot <- function(lift, title = "MDS Perceptual Map of Appliances Brands on Amazon", 
+                     c1 = "Coordinate 1", c2 = "Coordinate 2"){
+# Initialize the dissimilarity matrix
+DissLift <- data.frame(matrix(NA, nrow=nrow(lift), ncol=ncol(lift)))
+# take a copy to convert small values to a lower bound
+lift_c <- lift
+
+# use a nested loop to iterate over lift_c to change small values to our lower bound
+# we believe that the 0.00001 is small enough and the 9999999 is large enough to represent the ultimate dissimilarity
+for (i in 1:nrow(lift)) {
+  for (j in 1:ncol(lift)) {
+    if(i == j){
+      # assign zeros to the diagonal line
+      DissLift[i, j] <- 0
+      next
+    } else if (is.na(lift[i, j])){
+      # if the lift is NA, assign lower bound to it and 9999999 to DissLift
+      lift_c[i, j] <- 0.00001
+      DissLift[i, j] <- 9999999
+      next
+    } else if (abs(lift[i, j]) <= 0.00001) {
+      # if the lift is smaller than the lower bound, assign lower bound to it and 9999999 to DissLift
+      lift_c[i, j] <- 0.00001
+      DissLift[i, j] <- 9999999
+      next
+    }
+  }
+}
+
+# Calculate dissimilarity
+# our dissimilarity is calculated using (min(lift[i, ])/lift[i, j])
+for (i in 1:nrow(lift)) {
+  for (j in 1:ncol(lift)) {
+    if (is.na(DissLift[i, j])) {
+      row_i <- lift_c[i, ]
+      row_i <- row_i[row_i > 0.00001]
+      DissLift[i, j] <- min(row_i, na.rm = T)/lift[i, j]
+    }
+
+  }
+}
+
+
+# assign indexes to the dissimilarity matrix
+rownames(DissLift) <- rownames(lift)
+colnames(DissLift) <- colnames(lift)
+# get the 2-dimensional MDS scale
+DissMatrix.mds <- cmdscale(DissLift, eig=TRUE, k=2)
+# DissMatrix.mds is a list
+result <- data.frame(DissMatrix.mds$points)
+colnames(result) = c("Coordinate1", "Coordinate2")
+# plot solution
+p <- ggplot(data = result, aes(x= Coordinate1, y = Coordinate2)) +
+  geom_text(label = rownames(result)) +
+  ggtitle(title) +
+  labs(x = c1, y = c2)
+
+return(list("mds_plot" = p, "DissLift" = DissLift))
+# comment the below out if want to zoom in
+# + scale_x_continuous(limits = c(0, 1500)) +
+#   scale_y_continuous(limits = c(-3000, 0))
+}
+
+# get the MDS plot
+mds <- mds_plot(lift)
+mds$mds_plot
+```
+
+```{r hierarchical clustering}
+# Hierarchical Clustering
+# Create distance matrix
+DissLift <- mds$DissLift
+d <- dist(DissLift, method = "euclidean")
+fit <- hclust(d)
+# Plot dendogram
+plot(fit)
+# Cut tree into 3 clusters
+groups <- cutree(fit, k=3)
+# Add red borders to show the 3 clusters 
+rect.hclust(fit, k=3, border="red")
+
+```
+
+```{r sub category dryer}
+# take a subset of review data of category "Dryer Parts & Accessories"
+Dryer <- appliances_tidy %>%
+  filter(cat_3 == "Dryer Parts & Accessories")
+
+# select the top 30 brands from the subcategory review data based on the number of reviews
+Dryer_30_tbl <- Dryer %>%
+  group_by(brand) %>%
+  count()%>%
+  arrange(desc(n)) %>%
+  na.omit() %>%
+  ungroup() %>%
+  top_n(30, wt = n)
+
+# acquire the top 30 brands' array
+Dryer_30 <- Dryer_30_tbl$brand
+
+# get the lift matrix for the dryer subset
+lift_dryer <- computeLift(Dryer, Dryer_30)
+# save the lift_dryer
+write_csv(lift_dryer, "lift_dryer.csv")
+
+# get the MDS plot
+mds_dryer <- mds_plot(lift_dryer, title = "MDS Perceptual Map of Dryers Brands on Amazon",
+                      c2 = "Reliability", c1 = "Variability of Features")
+mds_dryer$mds_plot
+```
+
+```{r hierarchical clustering for dryer}
+# Hierarchical Clustering
+# Create distance matrix
+DissLift <- mds_dryer$DissLift
+d <- dist(DissLift, method = "euclidean")
+fit <- hclust(d)
+# Plot dendogram
+plot(fit)
+# Cut tree into 3 clusters
+groups <- cutree(fit, k=3)
+# Add red borders to show the 3 clusters 
+rect.hclust(fit, k=3, border="red")
+
+```
+
+
+
+```{r sentiment for dryer}
+
+#Filter out to keep only the top 30 dryer brands
+filter_dryer <- Dryer %>%
+  filter(brand %in% Dryer_30)
+
+#Use dictionary "afinn" to calculate the sentimental score for the top 30 brands according to the reviewtext
+review_words <- filter_dryer %>%
+  select(brand,summary,reviewText) %>%
+  unnest_tokens(word, reviewText) %>%
+  filter(!word %in% stop_words$word,
+         str_detect(word, "^[a-z']+$"))%>%
+  inner_join(get_sentiments("afinn"))
+
+#Calculate the mean sentimental score for each brand 
+reviews_sentiment <- review_words %>%
+  group_by(brand) %>%
+  na.omit()%>%
+  summarize(sentiment = mean(value))
+
+#Get the words that appeared more than 20 times in each brand to oveview customer's perception on the brand
+review_words_counted <- review_words %>%
+  count(brand, value, word) %>%
+  filter(n>20)%>%
+  ungroup()
+
+# Aggregate all the above tables into one
+word_summaries <- review_words_counted %>%
+  group_by(brand) %>%
+  summarize(reviews = n(),
+            uses = sum(n)) %>%
+  ungroup()%>%
+  na.omit()%>%
+  left_join(reviews_sentiment, by = "brand") %>%
+  arrange(desc(sentiment)) 
+
+#Get the number of reviews that mentioned "noisy" or "noise" to get the noisy level for each brand
+reviews_c2 <- review_words %>%
+  filter(word=="noisy"|word=="noise")%>%
+  group_by(brand)%>%
+  summarize(number=n())%>%
+  arrange(desc(number))
+
+#Use the frequency of noise level/number of reviews for each particular brand to get the noise ratio and ranked from the most noisy to least noisy
+reviews_noise<-inner_join(reviews_c2,Dryer_30_tbl,by="brand")
+reviews_noise$noise_level<-reviews_noise$number/reviews_noise$n
+reviews_noise<-reviews_noise%>%
+  arrange(desc(noise_level))
+
+
+#Count the number of appearance of word "easy" in the top 30 brands reviews and ranked from most frequent to least frequent
+reviews_e <- review_words %>%
+  filter(word=="easy")%>%
+  group_by(brand)%>%
+  summarize(en=n())%>%
+  arrange(desc(en))
+#Count the number of appearance of word "hard" in the top 30 brands reviews and ranked from most frequent to least frequent
+reviews_h <- review_words %>%
+  filter(word=="hard")%>%
+  group_by(brand)%>%
+  summarize(hn=n())%>%
+  arrange(desc(hn))
+
+#use the number of easy-number of hard of each brand over the number of reviews to get the easiness score for the top 30 brands and ranked in the order from high to low
+reviews_easiness<-inner_join(reviews_e,Dryer_30_tbl,by="brand")
+reviews_easiness<-left_join(reviews_easiness,reviews_h,by="brand")
+reviews_easiness$easy_level<-reviews_easiness$en/reviews_easiness$n-reviews_easiness$hn/reviews_easiness$n
+reviews_easiness<-reviews_easiness%>%
+  arrange(desc(easy_level))
+
+
+
+```
+
+
+
+```{r Appendix exploring price, eval = F}
+# Determine if there is a price differences between products - conclusion: no
+# Group data by brand and fidn the average price per group
+appliances_tidy_price <- appliances_tidy %>%
+  group_by(brand) %>%
+    summarize(mean(price)) 
+
+# Find the top Dryer brands based on amount of reviews 
+Dryer_top <- appliances_tidy %>%
+  filter(cat_3 == "Dryer Parts & Accessories") %>%
+  group_by(brand) %>%
+  count()%>%
+  arrange(desc(n)) %>%
+  na.omit() %>%
+  filter(n>169)
+
+# Merge the data frames in order to get the average prices for the top 30 Dryer brands
+top_price <- inner_join(by = "brand", appliances_tidy_price, Dryer_top)
+
+```
+
+
+
+
+```{r Appendix exploring subcategories of top brands, eval = F}
+#Use the asin to merge the meta_tidy ad app_tidy and then merge with the top 30 brands to get the cateory and brand name with Top 30 brands only 
+m2<-inner_join(meta_tidy,app_tidy,by="asin")
+m2<-inner_join(m2,brands,by="brand")%>%
+  select(1,2)
+
+#To display each level of sub-category that GE belongs to
+c_ge<-m2%>%
+  filter(brand=="GE")
+# unique(c_ge$category)
+
+c_ge <- c_ge %>%
+  unnest_wider(category) 
+
+c_ge <- c_ge %>%
+  rename(cat_1 = ...1,
+         cat_2 = ...2,
+         cat_3 = ...3,
+         cat_4 = ...4,
+         cat_5 = ...5,
+         cat_6 = ...6,
+         cat_7 = ...7,
+         cat_8 = ...8)
+
+c_ge <- c_ge %>%
+  unnest_wider(rank) %>%
+  rename(rank = ...1)
+
+unique(c_ge$...2)
+
+#To display each level of sub-category that BestAir belongs to
+c_ba<-m2%>%
+  filter(brand=="BestAir")
+unique(c_ba$category)
+
+c_ba <- c_ba %>%
+  unnest_wider(category) 
+
+c_ba <- c_ba %>%
+  rename(cat_1 = ...1,
+         cat_2 = ...2,
+         cat_3 = ...3,
+         cat_4 = ...4,
+         cat_5 = ...5)
+
+c_ba <- c_ba %>%
+  unnest_wider(rank) %>%
+  rename(rank = ...1)
+
+
+#To display each level of sub-category that WaterSentinel belongs to
+c_ws<-m2%>%
+  filter(brand=="WaterSentinel")
+
+c_ws <- c_ws %>%
+  unnest_wider(category) 
+
+c_ws <- c_ws %>%
+  rename(cat_1 = ...1,
+         cat_2 = ...2,
+         cat_3 = ...3,
+         cat_4 = ...4,
+         cat_5 = ...5)
+
+c_ws <- c_ws %>%
+unnest_wider(rank) %>%
+  rename(rank = ...1)
+
+unique(c_ws$...4)
+
+
+#To display each level of sub-category that Aprilaire belongs to
+c_ap<-m2%>%
+  filter(brand=="Aprilaire")
+
+c_ap <- c_ap %>%
+  unnest_wider(category) 
+
+c_ap <- c_ap %>%
+  rename(cat_1 = ...1,
+         cat_2 = ...2,
+         cat_3 = ...3,
+         cat_4 = ...4,
+         cat_5 = ...5)
+
+c_ap <- c_ap %>%
+  unnest_wider(rank) %>%
+  rename(rank = ...1)
+
+unique(c_ap$...2)
+
+#To display each level of sub-category that Waterfall Filter belongs to
+
+c_wf<-m2%>%
+  filter(brand=="Waterfall Filter")
+
+c_wf <- c_wf %>%
+  unnest_wider(category) 
+
+c_wf <- c_wf %>%
+  rename(cat_1 = ...1,
+         cat_2 = ...2,
+         cat_3 = ...3,
+         cat_4 = ...4,
+         cat_5 = ...5)
+
+c_wf <- c_wf %>%
+  unnest_wider(rank) %>%
+  rename(rank = ...1)
+
+unique(c_wf$...2)
+
+```
+
